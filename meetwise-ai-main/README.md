@@ -124,7 +124,7 @@ meetwise-ai/
 
 ## 👥 Built By
 
-Team MeetWise — Built for Hack Days NIET 2026
+Team MeetWise — GB1
 
 ---
 
