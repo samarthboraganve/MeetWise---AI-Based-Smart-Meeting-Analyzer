@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Log in to MeetWise AI.">
+    <title>Login - MeetWise AI</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="auth-page-shell">
+    <div class="auth-page-card card">
+        <div class="auth-page-copy">
+            <p class="auth-page-kicker">Step 2 of 2</p>
+            <h1 class="auth-page-title">Log in and continue</h1>
+            <p class="auth-page-text" id="login-copy">
+                Use your email and password to continue to MeetWise.
+            </p>
+        </div>
+
+        <form class="auth-form" id="login-form">
+            <div class="form-group">
+                <label class="form-label" for="login-email">Email</label>
+                <input class="form-input" id="login-email" type="email" autocomplete="email" placeholder="you@example.com" required>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="login-password">Password</label>
+                <input class="form-input" id="login-password" type="password" autocomplete="current-password" placeholder="Enter your password" required>
+            </div>
+
+            <button class="btn btn-primary btn-lg auth-submit-btn" id="login-submit-btn" type="submit">
+                Log In
+            </button>
+        </form>
+
+        <button class="btn btn-secondary auth-submit-btn" id="forgot-password-btn" type="button">
+            Forgot Password? Email Me a Magic Link
+        </button>
+
+        <div class="auth-page-footer">
+            <span>New here?</span>
+            <a class="auth-link-btn" id="register-link" href="/static/register.html">Register first</a>
+        </div>
+    </div>
+</div>
+
+<div class="toast-container" id="toast-container"></div>
+
+<script src="/static/app.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="/static/auth.js"></script>
+<script>
+    const params = new URLSearchParams(window.location.search);
+    const nextUrl = MeetWiseAuth.getNextUrl('/static/dashboard.html');
+    const reason = params.get('reason');
+    const email = params.get('email');
+    const registered = params.get('registered') === '1';
+
+    if (reason) {
+        document.getElementById('login-copy').textContent = `${reason} Log in and we will take you back there.`;
+    } else if (registered) {
+        document.getElementById('login-copy').textContent = 'Your account is ready. Log in now and continue to MeetWise.';
+    }
+
+    if (email) {
+        document.getElementById('login-email').value = email;
+    }
+
+    document.getElementById('register-link').href = MeetWiseAuth.buildAuthUrl(MeetWiseAuth.paths.register, { nextUrl });
+
+    async function maybeRedirectAuthenticated() {
+        await MeetWiseAuth.init();
+
+        if (MeetWiseAuth.getUser()) {
+            window.location.href = nextUrl;
+            return;
+        }
+
+        const client = MeetWiseAuth.getClient();
+        if (!client) {
+            return;
+        }
+
+        client.auth.onAuthStateChange((event, session) => {
+            if (!session || !session.user) {
+                return;
+            }
+
+            if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'PASSWORD_RECOVERY') {
+                window.location.href = nextUrl;
+            }
+        });
+    }
+
+    document.getElementById('login-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+
+        const client = await MeetWiseAuth.ensureClient();
+        if (!client) return;
+
+        const loginEmail = document.getElementById('login-email').value.trim();
+        const password = document.getElementById('login-password').value;
+        const submitButton = document.getElementById('login-submit-btn');
+
+        if (!loginEmail || !password) {
+            showToast('Enter both email and password.', 'error');
+            return;
+        }
+
+        submitButton.disabled = true;
+        submitButton.textContent = 'Logging in...';
+
+        try {
+            const { error } = await client.auth.signInWithPassword({
+                email: loginEmail,
+                password,
+            });
+
+            if (error) {
+                throw error;
+            }
+
+            window.location.href = nextUrl;
+        } catch (error) {
+            console.error('[auth] Login failed:', error);
+            showToast(error.message || 'Login failed.', 'error');
+        } finally {
+            submitButton.disabled = false;
+            submitButton.textContent = 'Log In';
+        }
+    });
+
+    document.getElementById('forgot-password-btn').addEventListener('click', async () => {
+        const client = await MeetWiseAuth.ensureClient();
+        if (!client) return;
+
+        const loginEmail = document.getElementById('login-email').value.trim();
+        const button = document.getElementById('forgot-password-btn');
+
+        if (!loginEmail) {
+            showToast('Enter your email first so we know where to send the magic link.', 'error');
+            document.getElementById('login-email').focus();
+            return;
+        }
+
+        button.disabled = true;
+        button.textContent = 'Sending magic link...';
+
+        try {
+            const { error } = await client.auth.signInWithOtp({
+                email: loginEmail,
+                options: {
+                    shouldCreateUser: false,
+                    emailRedirectTo: `${window.location.origin}/static/login.html?next=${encodeURIComponent(nextUrl)}`,
+                },
+            });
+
+            if (error) {
+                throw error;
+            }
+
+            showToast('Magic link sent. Click it and you will be logged in automatically.', 'success');
+        } catch (error) {
+            console.error('[auth] Magic link request failed:', error);
+            showToast(error.message || 'Failed to send magic link.', 'error');
+        } finally {
+            button.disabled = false;
+            button.textContent = 'Forgot Password? Email Me a Magic Link';
+        }
+    });
+
+    maybeRedirectAuthenticated();
+</script>
+
+</body>
+</html>

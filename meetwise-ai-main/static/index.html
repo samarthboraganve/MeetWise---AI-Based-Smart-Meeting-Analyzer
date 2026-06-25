@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="MeetWise AI — Browser-based meeting tool with AI-powered summaries. Meetings end. Clarity begins.">
+    <title>MeetWise AI — Meetings end. Clarity begins.</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="page-wrapper">
+    <div class="landing-container">
+
+        <!-- Hero -->
+        <div class="landing-hero">
+            <div class="landing-logo">M</div>
+            <h1 class="landing-title">MeetWise AI</h1>
+            <p class="landing-tagline">Meetings end. Clarity begins.</p>
+            <p class="landing-subtitle">
+                Each person's mic is recorded. When the meeting ends, Gemini AI generates a 
+                structured summary — shared across every team in your workspace.
+            </p>
+        </div>
+
+        <!-- Action Cards -->
+        <div class="landing-cards">
+            <!-- Create Workspace -->
+            <div class="card landing-card" id="create-workspace-card">
+                <h3>🏢 Create Workspace</h3>
+                <p>Start a new workspace for your organization or team.</p>
+                <div class="form-group" style="margin-bottom:0.75rem">
+                    <input type="text" class="form-input" id="workspace-name-input" 
+                           placeholder="e.g. Acme Corp" autocomplete="off">
+                </div>
+                <button class="btn btn-primary" style="width:100%" id="create-workspace-btn">
+                    Create Workspace
+                </button>
+            </div>
+
+            <!-- Join Workspace -->
+            <div class="card landing-card" id="join-workspace-card">
+                <h3>🔗 Join Workspace</h3>
+                <p>Enter a workspace ID to view teams and meeting summaries.</p>
+                <div class="form-group" style="margin-bottom:0.75rem">
+                    <input type="text" class="form-input" id="join-workspace-id" 
+                           placeholder="Workspace ID (e.g. ws_a1b2c3)" autocomplete="off">
+                </div>
+                <div class="form-group" style="margin-bottom:0.75rem">
+                    <input type="text" class="form-input" id="join-user-name" 
+                           placeholder="Your name" autocomplete="off">
+                </div>
+                <button class="btn btn-secondary" style="width:100%" id="join-workspace-btn">
+                    Join Workspace
+                </button>
+            </div>
+        </div>
+
+        <!-- Features -->
+        <div class="landing-features">
+            <div class="landing-feature">
+                <div class="landing-feature-icon">🎙️</div>
+                Per-person audio
+            </div>
+            <div class="landing-feature">
+                <div class="landing-feature-icon">🤖</div>
+                Gemini summaries
+            </div>
+            <div class="landing-feature">
+                <div class="landing-feature-icon">👥</div>
+                Cross-team sharing
+            </div>
+            <div class="landing-feature">
+                <div class="landing-feature-icon">📋</div>
+                Action items
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toast-container"></div>
+
+<script src="/static/app.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="/static/auth.js"></script>
+<script>
+    // ── Create Workspace ──
+    document.getElementById('create-workspace-btn').addEventListener('click', async () => {
+        const name = document.getElementById('workspace-name-input').value.trim();
+        if (!name) { showToast('Please enter a workspace name', 'error'); return; }
+        
+        const btn = document.getElementById('create-workspace-btn');
+        btn.disabled = true;
+        btn.textContent = 'Creating...';
+
+        try {
+            const res = await fetch('/api/workspace/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name })
+            });
+            const data = await res.json();
+            sessionStorage.setItem('workspace_id', data.workspace_id);
+            sessionStorage.setItem('workspace_name', name);
+            sessionStorage.setItem('user_name', 'Host');
+            showToast('Workspace created!', 'success');
+            setTimeout(() => window.location.href = '/static/dashboard.html', 500);
+        } catch (e) {
+            showToast('Failed to create workspace', 'error');
+            btn.disabled = false;
+            btn.textContent = 'Create Workspace';
+        }
+    });
+
+    // ── Join Workspace ──
+    document.getElementById('join-workspace-btn').addEventListener('click', async () => {
+        const wsId = document.getElementById('join-workspace-id').value.trim();
+        const userName = document.getElementById('join-user-name').value.trim();
+        if (!wsId) { showToast('Please enter a workspace ID', 'error'); return; }
+        if (!userName) { showToast('Please enter your name', 'error'); return; }
+
+        const btn = document.getElementById('join-workspace-btn');
+        btn.disabled = true;
+        btn.textContent = 'Joining...';
+
+        try {
+            const res = await fetch('/api/workspace/join', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ workspace_id: wsId, user_name: userName })
+            });
+            if (!res.ok) throw new Error('Workspace not found');
+            const data = await res.json();
+            sessionStorage.setItem('workspace_id', data.workspace_id);
+            sessionStorage.setItem('workspace_name', data.name);
+            sessionStorage.setItem('user_name', userName);
+            showToast('Joined workspace!', 'success');
+            setTimeout(() => window.location.href = '/static/dashboard.html', 500);
+        } catch (e) {
+            showToast('Workspace not found', 'error');
+            btn.disabled = false;
+            btn.textContent = 'Join Workspace';
+        }
+    });
+
+    // Enter key support
+    document.getElementById('workspace-name-input').addEventListener('keydown', e => {
+        if (e.key === 'Enter') document.getElementById('create-workspace-btn').click();
+    });
+    document.getElementById('join-user-name').addEventListener('keydown', e => {
+        if (e.key === 'Enter') document.getElementById('join-workspace-btn').click();
+    });
+</script>
+
+</body>
+</html>

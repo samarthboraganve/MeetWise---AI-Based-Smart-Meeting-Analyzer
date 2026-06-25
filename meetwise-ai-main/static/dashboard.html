@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="MeetWise AI — Team dashboard with meeting summaries.">
+    <title>Dashboard — MeetWise AI</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="page-wrapper">
+    <!-- Header -->
+    <header class="app-header">
+        <a href="/static/index.html" class="app-logo">
+            <div class="app-logo-icon">M</div>
+            <div class="app-logo-text">Meet<span>Wise</span></div>
+        </a>
+        <div id="workspace-info" style="flex:1;text-align:center;">
+            <span style="font-size:0.8rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;">Workspace</span>
+            <div style="font-weight:600;" id="workspace-name-display">Loading...</div>
+        </div>
+        <div class="header-actions">
+            <div class="auth-status" data-auth-status>Sign in to unlock teams, meetings, and summaries.</div>
+            <button class="btn btn-ghost btn-sm" data-auth-toggle>Sign In</button>
+            <button class="btn btn-secondary btn-sm" id="create-team-btn">+ Team</button>
+            <button class="btn btn-primary btn-sm" id="new-meeting-btn">+ Meeting</button>
+        </div>
+    </header>
+
+    <!-- Workspace ID banner -->
+    <div class="card" style="padding:0.75rem 1.25rem;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;">
+        <div>
+            <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;">Workspace ID</span>
+            <div style="font-family:monospace;font-size:0.9rem;color:var(--accent);" id="workspace-id-display">—</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="copy-ws-id-btn" title="Copy workspace ID">📋 Copy</button>
+    </div>
+
+    <!-- Teams & Summaries -->
+    <div class="dashboard-grid" id="dashboard-content">
+        <div class="empty-state">
+            <div class="empty-state-icon">⏳</div>
+            <p>Loading teams and summaries...</p>
+        </div>
+    </div>
+</div>
+
+<!-- Create Team Modal -->
+<div class="modal-overlay" id="create-team-modal">
+    <div class="modal-box">
+        <h3 class="modal-title">Create Team</h3>
+        <div class="form-group">
+            <label class="form-label">Team Name</label>
+            <input type="text" class="form-input" id="team-name-input" 
+                   placeholder="e.g. Frontend, Backend, Design" autocomplete="off">
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-ghost" id="cancel-team-btn">Cancel</button>
+            <button class="btn btn-primary" id="submit-team-btn">Create</button>
+        </div>
+    </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toast-container"></div>
+
+<script src="/static/app.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="/static/auth.js"></script>
+<script>
+    const wsId = sessionStorage.getItem('workspace_id');
+    const wsName = sessionStorage.getItem('workspace_name');
+    const dashboardParams = new URLSearchParams(window.location.search);
+
+    if (!wsId) {
+        window.location.href = '/static/index.html';
+    }
+
+    document.getElementById('workspace-name-display').textContent = wsName || 'Workspace';
+    document.getElementById('workspace-id-display').textContent = wsId || '—';
+
+    // Copy workspace ID
+    document.getElementById('copy-ws-id-btn').addEventListener('click', () => {
+        navigator.clipboard.writeText(wsId);
+        showToast('Workspace ID copied!', 'success');
+    });
+
+    async function ensureWorkspaceMembership() {
+        if (!MeetWiseAuth.getUser()) {
+            return;
+        }
+
+        const fallbackName = sessionStorage.getItem('user_name') || MeetWiseAuth.getUserDisplayName(MeetWiseAuth.getUser()) || 'Member';
+
+        try {
+            const res = await fetch('/api/workspace/join', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    workspace_id: wsId,
+                    user_name: fallbackName,
+                }),
+            });
+
+            if (!res.ok) {
+                throw new Error('Failed to sync workspace membership');
+            }
+
+            const data = await res.json();
+            sessionStorage.setItem('workspace_name', data.name || wsName || 'Workspace');
+            sessionStorage.setItem('user_name', fallbackName);
+            document.getElementById('workspace-name-display').textContent = data.name || wsName || 'Workspace';
+        } catch (error) {
+            console.error('[dashboard] Failed to sync workspace membership:', error);
+            throw error;
+        }
+    }
+
+    // Load dashboard data
+    async function loadDashboard() {
+        try {
+            const res = await fetch(`/api/summaries/workspace/${wsId}`);
+            const data = await res.json();
+            renderDashboard(data);
+        } catch (e) {
+            document.getElementById('dashboard-content').innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">⚠️</div>
+                    <p>Failed to load dashboard. Is the server running?</p>
+                </div>`;
+        }
+    }
+
+    function renderDashboard(data) {
+        const container = document.getElementById('dashboard-content');
+
+        if (!data.teams || data.teams.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">🏗️</div>
+                    <p>No teams yet. Create a team to get started!</p>
+                    <button class="btn btn-primary" onclick="document.getElementById('create-team-btn').click()">
+                        + Create Team
+                    </button>
+                </div>`;
+            return;
+        }
+
+        let html = '';
+        for (const team of data.teams) {
+            html += `
+            <div class="team-section">
+                <div class="team-header">
+                    <div class="team-header-left">
+                        <div class="team-icon">👥</div>
+                        <span class="team-name">${escapeHtml(team.team_name)}</span>
+                        <span class="badge badge-blue">${team.summaries.length} meeting${team.summaries.length !== 1 ? 's' : ''}</span>
+                    </div>
+                </div>
+                <div class="summary-grid">`;
+
+            if (team.summaries.length === 0) {
+                html += `
+                    <div style="padding:1rem;color:var(--text-muted);font-size:0.85rem;">
+                        No meetings yet for this team.
+                    </div>`;
+            } else {
+                for (const s of team.summaries) {
+                    html += `
+                    <div class="card card-clickable summary-card" data-summary-id="${s.summary_id}">
+                        <div class="summary-card-left">
+                            <div class="summary-card-title">${escapeHtml(s.meeting_title)}</div>
+                            <div class="summary-card-meta">
+                                <span class="badge badge-${getMeetingTypeBadge(s.meeting_type)}">${s.meeting_type}</span>
+                                <span>📅 ${s.date}</span>
+                                <span>⏱️ ${s.duration || 'N/A'}</span>
+                                <span>👥 ${s.participant_count}</span>
+                            </div>
+                        </div>
+                        <div class="summary-card-arrow">→</div>
+                    </div>`;
+                }
+            }
+
+            html += `</div></div>`;
+        }
+
+        container.innerHTML = html;
+
+        container.querySelectorAll('[data-summary-id]').forEach(card => {
+            card.addEventListener('click', () => {
+                const summaryId = card.dataset.summaryId;
+                MeetWiseAuth.requireAuth({
+                    reason: 'Sign in to open meeting summaries.',
+                    nextUrl: `/static/summary.html?id=${summaryId}`,
+                    onAuthenticated: () => {
+                        window.location.href = `/static/summary.html?id=${summaryId}`;
+                    }
+                });
+            });
+        });
+    }
+
+    function getMeetingTypeBadge(type) {
+        const map = { standup: 'green', planning: 'blue', review: 'purple', general: 'amber' };
+        return map[type] || 'blue';
+    }
+
+    // Create Team Modal
+    document.getElementById('create-team-btn').addEventListener('click', () => {
+        MeetWiseAuth.requireAuth({
+            reason: 'Sign in to create a team in this workspace.',
+            nextUrl: '/static/dashboard.html?action=create-team',
+            onAuthenticated: () => {
+                document.getElementById('create-team-modal').classList.add('active');
+                document.getElementById('team-name-input').focus();
+            }
+        });
+    });
+
+    document.getElementById('cancel-team-btn').addEventListener('click', () => {
+        document.getElementById('create-team-modal').classList.remove('active');
+    });
+
+    document.getElementById('submit-team-btn').addEventListener('click', async () => {
+        if (!MeetWiseAuth.getUser()) {
+            MeetWiseAuth.requireAuth({
+                reason: 'Sign in to create a team in this workspace.',
+                onAuthenticated: () => document.getElementById('submit-team-btn').click()
+            });
+            return;
+        }
+
+        const teamName = document.getElementById('team-name-input').value.trim();
+        if (!teamName) { showToast('Please enter a team name', 'error'); return; }
+
+        try {
+            const res = await fetch('/api/teams/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ workspace_id: wsId, team_name: teamName })
+            });
+            if (!res.ok) throw new Error();
+            document.getElementById('create-team-modal').classList.remove('active');
+            document.getElementById('team-name-input').value = '';
+            showToast(`Team "${teamName}" created!`, 'success');
+            loadDashboard();
+        } catch (e) {
+            showToast('Failed to create team', 'error');
+        }
+    });
+
+    document.getElementById('team-name-input').addEventListener('keydown', e => {
+        if (e.key === 'Enter') document.getElementById('submit-team-btn').click();
+    });
+
+    // New Meeting
+    document.getElementById('new-meeting-btn').addEventListener('click', () => {
+        MeetWiseAuth.requireAuth({
+            reason: 'Sign in to start a new meeting.',
+            nextUrl: '/static/create-room.html',
+            onAuthenticated: () => {
+                window.location.href = '/static/create-room.html';
+            }
+        });
+    });
+
+    // Modal close on overlay click
+    document.getElementById('create-team-modal').addEventListener('click', e => {
+        if (e.target === e.currentTarget) {
+            e.currentTarget.classList.remove('active');
+        }
+    });
+
+    function maybeHandleDeferredAction() {
+        if (dashboardParams.get('action') !== 'create-team') return;
+        if (!MeetWiseAuth.getUser()) return;
+
+        dashboardParams.delete('action');
+        const nextUrl = dashboardParams.toString()
+            ? `${window.location.pathname}?${dashboardParams.toString()}`
+            : window.location.pathname;
+        window.history.replaceState({}, '', nextUrl);
+
+        document.getElementById('create-team-modal').classList.add('active');
+        document.getElementById('team-name-input').focus();
+    }
+
+    document.addEventListener('meetwise-auth-changed', (event) => {
+        if (!event.detail || !event.detail.signedIn) return;
+        maybeHandleDeferredAction();
+    });
+
+    async function bootDashboard() {
+        try {
+            await MeetWiseAuth.requireAuth({
+                reason: 'Register or log in to view this workspace dashboard.',
+                nextUrl: window.location.pathname + window.location.search,
+            });
+
+            if (!MeetWiseAuth.getUser()) {
+                return;
+            }
+
+            await ensureWorkspaceMembership();
+            maybeHandleDeferredAction();
+            await loadDashboard();
+        } catch (error) {
+            console.error('[dashboard] Boot failed:', error);
+            showToast('We could not open this workspace. Please join it again.', 'error');
+            setTimeout(() => {
+                window.location.href = '/static/index.html';
+            }, 1200);
+        }
+    }
+
+    bootDashboard();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="MeetWise AI — Create a new meeting room.">
+    <title>New Meeting — MeetWise AI</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="page-wrapper narrow">
+    <!-- Header -->
+    <header class="app-header">
+        <a href="/static/dashboard.html" class="app-logo">
+            <div class="app-logo-icon">M</div>
+            <div class="app-logo-text">Meet<span>Wise</span></div>
+        </a>
+        <div class="header-actions">
+            <div class="auth-status" data-auth-status>Sign in to unlock teams, meetings, and summaries.</div>
+            <button class="btn btn-ghost btn-sm" data-auth-toggle>Sign In</button>
+            <button class="btn btn-ghost btn-sm" onclick="window.location.href='/static/dashboard.html'">
+                ← Dashboard
+            </button>
+        </div>
+    </header>
+
+    <!-- Create Room Form -->
+    <div class="create-room-container">
+        <h2 style="margin-bottom:1.5rem;">Start a New Meeting</h2>
+
+        <div class="card">
+            <div class="form-group">
+                <label class="form-label">Select Team</label>
+                <select class="form-select" id="team-select">
+                    <option value="">Loading teams...</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Meeting Type</label>
+                <select class="form-select" id="meeting-type-select">
+                    <option value="standup">🔄 Standup</option>
+                    <option value="planning">📋 Planning</option>
+                    <option value="review">🔍 Review</option>
+                    <option value="general" selected>💬 General</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Your Name (Host)</label>
+                <input type="text" class="form-input" id="host-name-input" 
+                       placeholder="e.g. Pratham" autocomplete="off">
+            </div>
+
+            <button class="btn btn-primary btn-lg" style="width:100%;margin-top:0.5rem" id="create-room-btn">
+                Create Meeting Room
+            </button>
+        </div>
+
+        <!-- Or Join existing room -->
+        <div class="card" style="margin-top:1.5rem;">
+            <h3 style="margin-bottom:1rem;font-size:1rem;">Or Join an Existing Meeting</h3>
+            <div class="form-group">
+                <label class="form-label">Room Code</label>
+                <input type="text" class="form-input" id="join-room-code" 
+                       placeholder="e.g. FE2041" autocomplete="off" style="text-transform:uppercase">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Your Name</label>
+                <input type="text" class="form-input" id="join-name-input" 
+                       placeholder="e.g. Rahul" autocomplete="off">
+            </div>
+            <button class="btn btn-secondary" style="width:100%" id="join-room-btn">
+                Join Meeting
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toast-container"></div>
+
+<script src="/static/app.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="/static/auth.js"></script>
+<script>
+    const wsId = sessionStorage.getItem('workspace_id');
+    if (!wsId) window.location.href = '/static/index.html';
+
+    // Populate host name from session
+    const savedName = sessionStorage.getItem('user_name');
+    if (savedName && savedName !== 'Host') {
+        document.getElementById('host-name-input').value = savedName;
+    }
+
+    // Load teams
+    async function loadTeams() {
+        try {
+            const res = await fetch(`/api/teams/${wsId}`);
+            const data = await res.json();
+            const select = document.getElementById('team-select');
+            if (data.teams.length === 0) {
+                select.innerHTML = '<option value="">No teams — go create one first</option>';
+            } else {
+                select.innerHTML = data.teams.map(t => 
+                    `<option value="${t.team_id}">${t.team_name}</option>`
+                ).join('');
+            }
+        } catch (e) {
+            showToast('Failed to load teams', 'error');
+        }
+    }
+
+    // Create Room
+    document.getElementById('create-room-btn').addEventListener('click', async () => {
+        if (!MeetWiseAuth.getUser()) {
+            MeetWiseAuth.requireAuth({
+                reason: 'Sign in to start a meeting.',
+                onAuthenticated: () => document.getElementById('create-room-btn').click()
+            });
+            return;
+        }
+
+        const teamId = document.getElementById('team-select').value;
+        const meetingType = document.getElementById('meeting-type-select').value;
+        const hostName = document.getElementById('host-name-input').value.trim();
+
+        if (!teamId) { showToast('Please select a team', 'error'); return; }
+        if (!hostName) { showToast('Please enter your name', 'error'); return; }
+
+        const btn = document.getElementById('create-room-btn');
+        btn.disabled = true;
+        btn.textContent = 'Creating...';
+
+        try {
+            const res = await fetch('/api/rooms/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    workspace_id: wsId,
+                    team_id: teamId,
+                    meeting_type: meetingType,
+                    host_name: hostName
+                })
+            });
+            if (!res.ok) throw new Error();
+            const data = await res.json();
+
+            sessionStorage.setItem('user_name', hostName);
+            sessionStorage.setItem('participant_id', data.participant_id);
+            sessionStorage.setItem('is_host', 'true');
+
+            window.location.href = `/static/room.html?code=${data.room_code}&pid=${data.participant_id}`;
+        } catch (e) {
+            showToast('Failed to create room', 'error');
+            btn.disabled = false;
+            btn.textContent = 'Create Meeting Room';
+        }
+    });
+
+    // Join Room
+    document.getElementById('join-room-btn').addEventListener('click', async () => {
+        if (!MeetWiseAuth.getUser()) {
+            MeetWiseAuth.requireAuth({
+                reason: 'Sign in to join a meeting room.',
+                onAuthenticated: () => document.getElementById('join-room-btn').click()
+            });
+            return;
+        }
+
+        const roomCode = document.getElementById('join-room-code').value.trim().toUpperCase();
+        const name = document.getElementById('join-name-input').value.trim();
+
+        if (!roomCode) { showToast('Please enter a room code', 'error'); return; }
+        if (!name) { showToast('Please enter your name', 'error'); return; }
+
+        const btn = document.getElementById('join-room-btn');
+        btn.disabled = true;
+        btn.textContent = 'Joining...';
+
+        try {
+            const res = await fetch('/api/rooms/join', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ room_code: roomCode, participant_name: name })
+            });
+            if (!res.ok) throw new Error();
+            const data = await res.json();
+
+            sessionStorage.setItem('user_name', name);
+            sessionStorage.setItem('participant_id', data.participant_id);
+            sessionStorage.setItem('is_host', 'false');
+
+            window.location.href = `/static/room.html?code=${data.room_code}&pid=${data.participant_id}`;
+        } catch (e) {
+            showToast('Room not found or inactive', 'error');
+            btn.disabled = false;
+            btn.textContent = 'Join Meeting';
+        }
+    });
+
+    // Enter key support
+    document.getElementById('host-name-input').addEventListener('keydown', e => {
+        if (e.key === 'Enter') document.getElementById('create-room-btn').click();
+    });
+    document.getElementById('join-name-input').addEventListener('keydown', e => {
+        if (e.key === 'Enter') document.getElementById('join-room-btn').click();
+    });
+
+    loadTeams();
+</script>
+
+</body>
+</html>

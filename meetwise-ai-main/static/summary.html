@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="MeetWise AI — Meeting Summary powered by Gemini AI.">
+    <title>Summary — MeetWise AI</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="page-wrapper medium">
+    <!-- Header -->
+    <header class="app-header">
+        <a href="/static/dashboard.html" class="app-logo">
+            <div class="app-logo-icon">M</div>
+            <div class="app-logo-text">Meet<span>Wise</span></div>
+        </a>
+        <div class="header-actions">
+            <div class="auth-status" data-auth-status>Sign in to unlock teams, meetings, and summaries.</div>
+            <button class="btn btn-ghost btn-sm" data-auth-toggle>Sign In</button>
+        </div>
+    </header>
+
+    <!-- Back button -->
+    <div class="summary-back" id="back-btn" onclick="window.location.href='/static/dashboard.html'">
+        ← Back to Dashboard
+    </div>
+
+    <!-- Summary Content -->
+    <div id="summary-content">
+        <div class="empty-state">
+            <div class="spinner" style="margin:0 auto 1rem;"></div>
+            <p>Loading summary...</p>
+        </div>
+    </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toast-container"></div>
+
+<script src="/static/app.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="/static/auth.js"></script>
+<script>
+    const urlParams = new URLSearchParams(window.location.search);
+    const summaryId = urlParams.get('id');
+    let summaryLoaded = false;
+
+    if (!summaryId) {
+        document.getElementById('summary-content').innerHTML = `
+            <div class="empty-state">
+                <div class="empty-state-icon">❌</div>
+                <p>No summary ID provided.</p>
+                <button class="btn btn-primary" onclick="window.location.href='/static/dashboard.html'">
+                    Go to Dashboard
+                </button>
+            </div>`;
+    } else {
+        MeetWiseAuth.requireAuth({
+            reason: 'Sign in to view this meeting summary.',
+            onAuthenticated: () => {
+                if (summaryLoaded) return;
+                summaryLoaded = true;
+                loadSummary();
+            }
+        });
+    }
+
+    async function loadSummary() {
+        try {
+            const res = await fetch(`/api/summaries/${summaryId}`);
+            if (!res.ok) throw new Error('Summary not found');
+            const data = await res.json();
+            renderSummary(data);
+        } catch (e) {
+            document.getElementById('summary-content').innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">⚠️</div>
+                    <p>Failed to load summary.</p>
+                    <button class="btn btn-primary" onclick="window.location.href='/static/dashboard.html'">
+                        Go to Dashboard
+                    </button>
+                </div>`;
+        }
+    }
+
+    function renderSummary(d) {
+        const priorityClass = (p) => {
+            if (!p) return '';
+            const pl = p.toLowerCase();
+            if (pl.includes('high')) return 'priority-high';
+            if (pl.includes('medium')) return 'priority-medium';
+            if (pl.includes('low')) return 'priority-low';
+            return '';
+        };
+
+        const urgencyBadge = (u) => {
+            if (!u) return 'badge-blue';
+            const ul = u.toLowerCase();
+            if (ul.includes('blocking')) return 'badge-red';
+            if (ul.includes('soon')) return 'badge-amber';
+            return 'badge-green';
+        };
+
+        let html = `
+        <!-- Header -->
+        <div class="summary-header">
+            <h1 class="summary-title">${escapeHtml(d.meeting_title || 'Meeting Summary')}</h1>
+
+            <div class="summary-meta">
+                <div class="summary-meta-item">
+                    <span class="badge badge-${getMeetingTypeBadge(d.meeting_type)}">${d.meeting_type || 'general'}</span>
+                </div>
+                <div class="summary-meta-item">👥 ${escapeHtml(d.team || 'N/A')}</div>
+                <div class="summary-meta-item">📅 ${d.date || 'N/A'}</div>
+                <div class="summary-meta-item">⏱️ ${d.duration_estimate || 'N/A'}</div>
+                <div class="summary-meta-item">🧑‍🤝‍🧑 ${(d.participants || []).join(', ')}</div>
+            </div>
+
+            <div class="summary-actions">
+                <button class="btn btn-secondary btn-sm" id="download-btn">📥 Download Markdown</button>
+                <button class="btn btn-ghost btn-sm" id="copy-link-btn">🔗 Copy Link</button>
+            </div>
+        </div>`;
+
+        // Executive Summary
+        if (d.executive_summary) {
+            html += `
+            <div class="summary-section">
+                <div class="summary-section-title">📋 Executive Summary</div>
+                <div class="card executive-summary-card">
+                    <p>${escapeHtml(d.executive_summary)}</p>
+                </div>
+            </div>`;
+        }
+
+        // Key Decisions
+        if (d.key_decisions && d.key_decisions.length > 0) {
+            html += `
+            <div class="summary-section">
+                <div class="summary-section-title">✅ Key Decisions</div>`;
+            for (const kd of d.key_decisions) {
+                html += `
+                <div class="card decision-item">
+                    <div class="decision-text">${escapeHtml(kd.decision || '')}</div>
+                    <div class="decision-context">${escapeHtml(kd.context || '')}</div>
+                    <div class="decision-by">Decided by: ${escapeHtml(kd.decided_by || 'N/A')}</div>
+                </div>`;
+            }
+            html += `</div>`;
+        }
+
+        // Action Items
+        if (d.action_items && d.action_items.length > 0) {
+            html += `
+            <div class="summary-section">
+                <div class="summary-section-title">🎯 Action Items</div>
+                <div class="card" style="padding:0;overflow:hidden;">
+                    <table class="action-table">
+                        <thead>
+                            <tr>
+                                <th>Task</th>
+                                <th>Owner</th>
+                                <th>Deadline</th>
+                                <th>Priority</th>
+                            </tr>
+                        </thead>
+                        <tbody>`;
+            for (const ai of d.action_items) {
+                html += `
+                            <tr>
+                                <td>${escapeHtml(ai.task || '')}</td>
+                                <td>${escapeHtml(ai.owner || 'Unassigned')}</td>
+                                <td>${escapeHtml(ai.deadline || 'Not set')}</td>
+                                <td class="${priorityClass(ai.priority)}">${escapeHtml(ai.priority || 'medium')}</td>
+                            </tr>`;
+            }
+            html += `
+                        </tbody>
+                    </table>
+                </div>
+            </div>`;
+        }
+
+        // Cross-Team Dependencies
+        if (d.cross_team_dependencies && d.cross_team_dependencies.length > 0) {
+            html += `
+            <div class="summary-section">
+                <div class="summary-section-title">🔗 Cross-Team Dependencies</div>`;
+            for (const dep of d.cross_team_dependencies) {
+                html += `
+                <div class="card dependency-item">
+                    <div class="dependency-text">${escapeHtml(dep.dependency || '')}</div>
+                    <div class="dependency-meta">
+                        <span>Team needed: <strong>${escapeHtml(dep.team_needed || 'N/A')}</strong></span>
+                        <span class="badge ${urgencyBadge(dep.urgency)}">${dep.urgency || 'N/A'}</span>
+                    </div>
+                </div>`;
+            }
+            html += `</div>`;
+        }
+
+        // Unresolved Items
+        if (d.unresolved_items && d.unresolved_items.length > 0) {
+            html += `
+            <div class="summary-section">
+                <div class="summary-section-title">❓ Unresolved Items</div>
+                <ul class="unresolved-list">`;
+            for (const item of d.unresolved_items) {
+                html += `<li>${escapeHtml(item)}</li>`;
+            }
+            html += `</ul></div>`;
+        }
+
+        // Detailed Notes
+        if (d.detailed_notes) {
+            html += `
+            <div class="summary-section">
+                <div class="summary-section-title">📝 Detailed Notes</div>
+                <div class="detailed-notes-toggle" id="notes-toggle">
+                    ▶ Click to expand detailed notes
+                </div>
+                <div class="card detailed-notes-content" id="notes-content">
+                    ${escapeHtml(d.detailed_notes).replace(/\n/g, '<br>')}
+                </div>
+            </div>`;
+        }
+
+        document.getElementById('summary-content').innerHTML = html;
+
+        // Wire up actions
+        document.getElementById('download-btn').addEventListener('click', async () => {
+            try {
+                const res = await fetch(`/api/summaries/${summaryId}/download`);
+                if (!res.ok) throw new Error('Download failed');
+
+                const blob = await res.blob();
+                const url = window.URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = `meeting-summary-${summaryId}.md`;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                window.URL.revokeObjectURL(url);
+            } catch (error) {
+                console.error('[summary] Download failed:', error);
+                showToast('Failed to download summary.', 'error');
+            }
+        });
+
+        document.getElementById('copy-link-btn').addEventListener('click', () => {
+            navigator.clipboard.writeText(window.location.href);
+            showToast('Link copied!', 'success');
+        });
+
+        // Notes toggle
+        const notesToggle = document.getElementById('notes-toggle');
+        const notesContent = document.getElementById('notes-content');
+        if (notesToggle && notesContent) {
+            notesToggle.addEventListener('click', () => {
+                const expanded = notesContent.classList.toggle('expanded');
+                notesToggle.textContent = expanded 
+                    ? '▼ Click to collapse detailed notes' 
+                    : '▶ Click to expand detailed notes';
+            });
+        }
+    }
+
+    function getMeetingTypeBadge(type) {
+        const map = { standup: 'green', planning: 'blue', review: 'purple', general: 'amber' };
+        return map[type] || 'blue';
+    }
+</script>
+
+</body>
+</html>

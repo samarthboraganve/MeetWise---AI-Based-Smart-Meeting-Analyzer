@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="MeetWise AI — Meeting Room. Audio recording in progress.">
+    <title>Meeting Room — MeetWise AI</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="page-wrapper medium">
+    <!-- Header -->
+    <header class="app-header">
+        <a href="/static/dashboard.html" class="app-logo">
+            <div class="app-logo-icon">M</div>
+            <div class="app-logo-text">Meet<span>Wise</span></div>
+        </a>
+        <div class="header-actions">
+            <div class="auth-status" data-auth-status>Sign in to unlock teams, meetings, and summaries.</div>
+            <button class="btn btn-ghost btn-sm" data-auth-toggle>Sign In</button>
+            <div class="recording-indicator" id="recording-indicator" style="display:none;">
+                <div class="recording-dot"></div>
+                Recording from your mic
+            </div>
+        </div>
+    </header>
+
+    <!-- Join Form (shown if no participant_id in URL) -->
+    <div class="room-container" id="join-view" style="display:none;">
+        <div class="room-code-display">
+            <div class="room-code-label">Meeting Room</div>
+            <div class="room-code-value" id="join-room-code-display">------</div>
+        </div>
+        <div class="room-join-form">
+            <h2>Join this Meeting</h2>
+            <div class="card" style="padding:1.5rem;text-align:left;">
+                <div class="form-group">
+                    <label class="form-label">Your Name</label>
+                    <input type="text" class="form-input" id="join-name" placeholder="e.g. Rahul" autocomplete="off">
+                </div>
+                <button class="btn btn-primary btn-lg" style="width:100%" id="join-btn">Join Meeting</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Meeting View -->
+    <div class="room-container" id="meeting-view" style="display:none;">
+        <!-- Room Code -->
+        <div class="room-code-display">
+            <div class="room-code-label">Room Code — share this with your team</div>
+            <div class="room-code-value" id="room-code-display">------</div>
+        </div>
+
+        <!-- Info Bar -->
+        <div class="room-info-bar">
+            <div class="room-info-item">
+                <span class="badge badge-blue" id="meeting-type-badge">general</span>
+            </div>
+            <div class="room-info-item" id="team-name-display">
+                👥 Team: —
+            </div>
+        </div>
+
+        <!-- Timer -->
+        <div class="room-timer" id="room-timer">0:00</div>
+
+        <!-- Participants -->
+        <div class="participants-section">
+            <div class="participants-title">Participants (<span id="participant-count">0</span>)</div>
+            <div class="participant-list" id="participant-list">
+                <!-- Populated by JS -->
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="room-controls">
+            <button class="btn btn-danger btn-lg" id="end-meeting-btn">
+                ⏹ End Meeting
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Loading Overlay -->
+<div class="loading-overlay" id="loading-overlay">
+    <div class="spinner"></div>
+    <div class="loading-text" id="loading-text">Processing your meeting…</div>
+    <div class="loading-subtext" id="loading-subtext">Gemini is transcribing and generating your summary</div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toast-container"></div>
+
+<script src="/static/app.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="/static/auth.js"></script>
+<script>
+    // ── State ──
+    const urlParams = new URLSearchParams(window.location.search);
+    let roomCode = urlParams.get('code');
+    let participantId = urlParams.get('pid') || sessionStorage.getItem('participant_id');
+    let isHost = sessionStorage.getItem('is_host') === 'true';
+    let userName = sessionStorage.getItem('user_name') || '';
+
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let timerInterval = null;
+    let timerSeconds = 0;
+    let pollInterval = null;
+    let meetingEnded = false;
+
+    // ── Initialize ──
+    function init() {
+        if (!roomCode) {
+            showToast('No room code provided', 'error');
+            setTimeout(() => window.location.href = '/static/create-room.html', 1500);
+            return;
+        }
+
+        if (participantId) {
+            // Already joined — show meeting view
+            MeetWiseAuth.requireAuth({
+                reason: 'Sign in to enter the meeting room.',
+                onAuthenticated: () => {
+                    showMeetingView();
+                }
+            });
+        } else {
+            // Show join form
+            showJoinView();
+        }
+    }
+
+    // ── Join View ──
+    function showJoinView() {
+        document.getElementById('join-view').style.display = 'flex';
+        document.getElementById('meeting-view').style.display = 'none';
+        document.getElementById('join-room-code-display').textContent = roomCode;
+
+        document.getElementById('join-btn').addEventListener('click', async () => {
+            if (!MeetWiseAuth.getUser()) {
+                MeetWiseAuth.requireAuth({
+                    reason: 'Sign in to join this meeting.',
+                    onAuthenticated: () => document.getElementById('join-btn').click()
+                });
+                return;
+            }
+
+            const name = document.getElementById('join-name').value.trim();
+            if (!name) { showToast('Please enter your name', 'error'); return; }
+
+            try {
+                const res = await fetch('/api/rooms/join', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ room_code: roomCode, participant_name: name })
+                });
+                if (!res.ok) throw new Error();
+                const data = await res.json();
+
+                participantId = data.participant_id;
+                userName = name;
+                isHost = false;
+                sessionStorage.setItem('participant_id', participantId);
+                sessionStorage.setItem('user_name', userName);
+                sessionStorage.setItem('is_host', 'false');
+
+                showMeetingView();
+            } catch (e) {
+                showToast('Failed to join room', 'error');
+            }
+        });
+
+        document.getElementById('join-name').addEventListener('keydown', e => {
+            if (e.key === 'Enter') document.getElementById('join-btn').click();
+        });
+    }
+
+    // ── Meeting View ──
+    async function showMeetingView() {
+        document.getElementById('join-view').style.display = 'none';
+        document.getElementById('meeting-view').style.display = 'flex';
+        document.getElementById('room-code-display').textContent = roomCode;
+
+        // Start audio recording
+        await startRecording();
+
+        // Start timer
+        startTimer();
+
+        // Start polling
+        startPolling();
+
+        // Load initial status
+        await refreshStatus();
+
+        // End meeting handler
+        document.getElementById('end-meeting-btn').addEventListener('click', () => {
+            endMeeting();
+        });
+    }
+
+    // ── Audio Recording ──
+    async function startRecording() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+            // Check for webm support, fallback to whatever is available
+            let mimeType = 'audio/webm;codecs=opus';
+            if (!MediaRecorder.isTypeSupported(mimeType)) {
+                mimeType = 'audio/webm';
+                if (!MediaRecorder.isTypeSupported(mimeType)) {
+                    mimeType = '';  // Let browser choose
+                }
+            }
+
+            const options = mimeType ? { mimeType } : {};
+            mediaRecorder = new MediaRecorder(stream, options);
+            audioChunks = [];
+
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    audioChunks.push(event.data);
+                }
+            };
+
+            mediaRecorder.start(1000); // collect data every second
+            document.getElementById('recording-indicator').style.display = 'flex';
+            console.log('[audio] Recording started');
+        } catch (e) {
+            console.error('[audio] Failed to start recording:', e);
+            showToast('Microphone access denied. Please allow mic access and refresh.', 'error');
+        }
+    }
+
+    async function stopAndUpload() {
+        return new Promise((resolve) => {
+            if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+                resolve();
+                return;
+            }
+
+            mediaRecorder.onstop = async () => {
+                console.log('[audio] Recording stopped, uploading...');
+                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+
+                const formData = new FormData();
+                formData.append('room_code', roomCode);
+                formData.append('participant_id', participantId);
+                formData.append('audio', audioBlob, 'recording.webm');
+
+                try {
+                    await fetch('/api/audio/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    console.log('[audio] Upload complete');
+                } catch (e) {
+                    console.error('[audio] Upload failed:', e);
+                }
+
+                resolve();
+            };
+
+            mediaRecorder.stop();
+            document.getElementById('recording-indicator').style.display = 'none';
+
+            // Stop all tracks
+            if (mediaRecorder.stream) {
+                mediaRecorder.stream.getTracks().forEach(t => t.stop());
+            }
+        });
+    }
+
+    // ── Timer ──
+    function startTimer() {
+        timerInterval = setInterval(() => {
+            timerSeconds++;
+            const mins = Math.floor(timerSeconds / 60);
+            const secs = timerSeconds % 60;
+            document.getElementById('room-timer').textContent = 
+                `${mins}:${secs.toString().padStart(2, '0')}`;
+        }, 1000);
+    }
+
+    // ── Polling ──
+    function startPolling() {
+        pollInterval = setInterval(async () => {
+            await refreshStatus();
+        }, 5000);
+    }
+
+    async function refreshStatus() {
+        try {
+            const res = await fetch(`/api/rooms/${roomCode}/status`);
+            const data = await res.json();
+
+            // Update meeting info
+            document.getElementById('meeting-type-badge').textContent = data.meeting_type;
+            document.getElementById('team-name-display').textContent = `👥 Team: ${data.team_name}`;
+
+            // Update participants
+            const listEl = document.getElementById('participant-list');
+            document.getElementById('participant-count').textContent = data.participants.length;
+            listEl.innerHTML = data.participants.map(p => `
+                <div class="participant-item">
+                    <div class="participant-avatar">${p.name.charAt(0).toUpperCase()}</div>
+                    <div class="participant-name">
+                        ${escapeHtml(p.name)}
+                        ${p.is_host ? '<span class="badge badge-amber" style="margin-left:0.5rem">Host</span>' : ''}
+                    </div>
+                </div>
+            `).join('');
+
+            // Check if meeting was ended by host (Approach B)
+            if (!data.is_active && !meetingEnded) {
+                meetingEnded = true;
+                clearInterval(pollInterval);
+                showLoading('Meeting ended by host', 'Uploading your audio...');
+                await stopAndUpload();
+                
+                if (isHost) {
+                    // Host triggers the summary generation
+                    await triggerSummary();
+                } else {
+                    // Non-host waits and shows processing message
+                    showLoading('Processing meeting…', 'Gemini is generating your summary. Please wait.');
+                    // Poll for the summary to appear
+                    await waitForSummary();
+                }
+            }
+        } catch (e) {
+            console.error('[poll] Status check failed:', e);
+        }
+    }
+
+    // ── End Meeting ──
+    async function endMeeting() {
+        if (meetingEnded) return;
+        meetingEnded = true;
+        clearInterval(timerInterval);
+        clearInterval(pollInterval);
+
+        showLoading('Ending meeting…', 'Stopping recording and uploading audio...');
+
+        // Stop recording and upload
+        await stopAndUpload();
+
+        if (isHost) {
+            await triggerSummary();
+        } else {
+            // Just mark as ended for this participant
+            showLoading('Audio uploaded', 'Waiting for the host to process the meeting...');
+            await waitForSummary();
+        }
+    }
+
+    async function triggerSummary() {
+        showLoading('Processing with Gemini AI…', 'Transcribing audio and generating summary. This may take a minute.');
+
+        try {
+            const res = await fetch(`/api/rooms/${roomCode}/end`, {
+                method: 'POST'
+            });
+            const data = await res.json();
+
+            if (data.summary_id) {
+                showToast('Summary generated!', 'success');
+                setTimeout(() => {
+                    window.location.href = `/static/summary.html?id=${data.summary_id}`;
+                }, 500);
+            } else {
+                showToast('Processing complete but no summary generated', 'error');
+                hideLoading();
+            }
+        } catch (e) {
+            console.error('[end] Failed to process meeting:', e);
+            showToast('Failed to process meeting. Please try again.', 'error');
+            hideLoading();
+        }
+    }
+
+    async function waitForSummary() {
+        // Poll the room for the summary_id or just redirect to dashboard
+        showLoading('Waiting for summary…', 'The host is processing the meeting. You\'ll be redirected shortly.');
+        
+        // Simple approach: wait and redirect to dashboard
+        setTimeout(() => {
+            window.location.href = '/static/dashboard.html';
+        }, 10000);
+    }
+
+    // ── Loading helpers ──
+    function showLoading(text, subtext) {
+        document.getElementById('loading-text').textContent = text;
+        document.getElementById('loading-subtext').textContent = subtext || '';
+        document.getElementById('loading-overlay').classList.add('active');
+    }
+
+    function hideLoading() {
+        document.getElementById('loading-overlay').classList.remove('active');
+    }
+
+    // Go
+    init();
+</script>
+
+</body>
+</html>
